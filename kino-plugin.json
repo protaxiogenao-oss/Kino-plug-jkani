@@ -1,0 +1,132 @@
+{
+  "id": "jkanime",
+  "name": "JKAnime",
+  "version": "1.4.1",
+  "apiVersion": 6,
+  "entry": "plugin.js",
+  "description": "Anime de jkanime.bz (espejo sin Cloudflare). Búsqueda, episodios y servidores manuales.",
+  "author": "community",
+  "homepage": "https://github.com/yumehotaru41-rgb/kino-plugin-jkanime",
+  "hosts": [
+    "jkanime.bz",
+    "*.jkanime.bz",
+    "jkanime.net",
+    "*.jkanime.net",
+    "cdn.jkdesa.com",
+    "*.jkdesa.com",
+    "cdn.jkdesu.com",
+    "*.jkdesu.com",
+    "sfastwish.com",
+    "*.sfastwish.com",
+    "streamwish.com",
+    "*.streamwish.com",
+    "streamwish.to",
+    "*.streamwish.to",
+    "voe.sx",
+    "*.voe.sx",
+    "mixdrop.co",
+    "*.mixdrop.co",
+    "mp4upload.com",
+    "*.mp4upload.com",
+    "filemoon.sx",
+    "*.filemoon.sx",
+    "streamtape.com",
+    "*.streamtape.com",
+    "mediafire.com",
+    "*.mediafire.com",
+    "mega.nz",
+    "ok.ru",
+    "*.ok.ru",
+    "embedsito.com",
+    "*.embedsito.com",
+    "playmudos.com",
+    "*.playmudos.com",
+    "nika.playmudos.com",
+    "www.mp4upload.com",
+    "a3.mp4upload.com",
+    "vidhidevip.com",
+    "*.vidhidevip.com",
+    "bysekoze.com",
+    "*.bysekoze.com",
+    "mxdrop.to",
+    "*.mxdrop.to",
+    "dsvplay.com",
+    "*.dsvplay.com"
+  ],
+  "streamHosts": "any",
+  "capabilities": [
+    "search",
+    "home",
+    "browse",
+    "episodes",
+    "resolve"
+  ],
+  "categories": [
+    "anime",
+    "series",
+    "movies"
+  ],
+  "color": "#E74C3C",
+  "icon": "icon.png",
+  "theme": {
+    "accent": "#E74C3C",
+    "onAccent": "#FFFFFF",
+    "background": "#0D0D0D",
+    "surface": "#1A1A1A",
+    "highlight": "#FF6B6B"
+  },
+  "settings": [
+    {
+      "key": "preferServer",
+      "label": "Servidor preferido",
+      "type": "select",
+      "default": "desu",
+      "options": [
+        {
+          "value": "auto",
+          "label": "Automático"
+        },
+        {
+          "value": "desu",
+          "label": "Desu"
+        },
+        {
+          "value": "nozomi",
+          "label": "Nozomi"
+        },
+        {
+          "value": "streamwish",
+          "label": "StreamWish"
+        },
+        {
+          "value": "voe",
+          "label": "VOE"
+        },
+        {
+          "value": "mixdrop",
+          "label": "MixDrop"
+        },
+        {
+          "value": "mp4upload",
+          "label": "Mp4Upload"
+        },
+        {
+          "value": "filemoon",
+          "label": "Filemoon"
+        },
+        {
+          "value": "streamtape",
+          "label": "Streamtape"
+        },
+        {
+          "value": "mega",
+          "label": "Mega"
+        },
+        {
+          "value": "mediafire",
+          "label": "Mediafire"
+        }
+      ]
+    }
+  ]
+}
