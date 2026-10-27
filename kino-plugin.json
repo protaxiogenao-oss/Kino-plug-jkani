@@ -1,11 +1,11 @@
 {
   "id": "jkanime",
   "name": "JKAnime",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "apiVersion": 6,
   "entry": "plugin.js",
-  "description": "Anime de jkanime.bz (espejo sin Cloudflare). Búsqueda, episodios y servidores manuales.",
-  "author": "community",
+  "description": "Hecho por Hotaru Yume - Anime sub español",
+  "author": "Hotaru Yume",
   "homepage": "https://github.com/yumehotaru41-rgb/kino-plugin-jkanime",
   "hosts": [
     "jkanime.bz",
