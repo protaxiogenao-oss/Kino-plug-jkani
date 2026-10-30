@@ -1,6 +1,6 @@
 /// <reference path="./kino.d.ts" />
 /**
- * JKAnime plugin for Kino — v1.4.1
+ * JKAnime plugin for Kino — 1.5.0
  * jkanime.bz — Home: episodios recientes, emision, recientes, latino 16:9
  */
 
@@ -88,26 +88,46 @@ function norm(s) {
 function rank(items, q) {
   var nq = norm(q);
   if (!nq) return items;
+  var words = nq.split(" ").filter(function (w) {
+    return w.length > 1;
+  });
   var scored = [];
   for (var i = 0; i < items.length; i++) {
     var it = items[i];
     var nt = norm(it.title);
+    var ns = norm(it.ref || "");
     var score = 0;
-    if (nt === nq) score = 1000;
-    else if (nt.indexOf(nq) === 0) score = 800;
-    else if (nt.indexOf(nq) >= 0) score = 500;
+    if (nt === nq || ns === nq.replace(/\s+/g, "-")) score = 1000;
+    else if (nt.indexOf(nq) === 0) score = 850;
+    else if (nt.indexOf(nq) >= 0) score = 700;
+    else if (ns.indexOf(nq.replace(/\s+/g, "-")) >= 0) score = 650;
     else {
-      var words = nq.split(" ");
       var hit = 0;
+      var ordered = 0;
+      var last = -1;
       for (var w = 0; w < words.length; w++) {
-        if (words[w].length > 1 && nt.indexOf(words[w]) >= 0) hit++;
+        var pos = nt.indexOf(words[w]);
+        if (pos < 0) pos = ns.indexOf(words[w]);
+        if (pos >= 0) {
+          hit++;
+          if (pos >= last) {
+            ordered++;
+            last = pos;
+          }
+        }
       }
-      score = hit * 120;
+      if (words.length) {
+        score = Math.round((hit / words.length) * 500) + ordered * 40;
+        // al menos la mitad de palabras significativas
+        if (hit < Math.ceil(words.length * 0.5) && hit < 2) score = 0;
+      }
     }
-    if (score > 0) scored.push({ it: it, score: score });
+    // prefer shorter titles when score similar (exact series over long titles)
+    if (score > 0) scored.push({ it: it, score: score, len: nt.length });
   }
   scored.sort(function (a, b) {
-    return b.score - a.score;
+    if (b.score !== a.score) return b.score - a.score;
+    return a.len - b.len;
   });
   var out = [];
   for (var j = 0; j < scored.length; j++) out.push(scored[j].it);
@@ -453,13 +473,42 @@ export async function search(query) {
   await Promise.resolve();
   var q = ((query && query.q) || "").trim();
   if (!q) return [];
-  var html = await get("/buscar/?q=" + encodeURIComponent(q));
-  var items = parseAnimeItems(html);
-  if (items.length === 0) items = parseHomeCards(html);
-  items = rank(items, q);
-  items = dedupe(items);
-  if (items.length > 100) items = items.slice(0, 100);
-  return items;
+
+  // Variantes: frase completa y versiones más cortas (nombres largos)
+  var variants = [q];
+  var parts = q.split(/\s+/).filter(Boolean);
+  if (parts.length > 2) {
+    variants.push(parts.slice(0, 3).join(" "));
+    variants.push(parts.slice(0, 2).join(" "));
+  }
+  if (parts.length > 1) variants.push(parts[0]);
+  // sin signos raros
+  var clean = q.replace(/[!?¡¿.:,;'"()\[\]]+/g, " ").replace(/\s+/g, " ").trim();
+  if (clean && clean !== q) variants.push(clean);
+
+  var seen = {};
+  var all = [];
+  for (var v = 0; v < variants.length; v++) {
+    var term = variants[v];
+    if (!term || seen["q:" + term.toLowerCase()]) continue;
+    seen["q:" + term.toLowerCase()] = true;
+    try {
+      var html = await get("/buscar/?q=" + encodeURIComponent(term));
+      var batch = parseAnimeItems(html);
+      if (batch.length === 0) batch = parseHomeCards(html);
+      for (var i = 0; i < batch.length; i++) {
+        if (seen[batch[i].ref]) continue;
+        seen[batch[i].ref] = true;
+        all.push(batch[i]);
+      }
+      // si ya hay buenos resultados con la query completa, no hace falta más
+      if (v === 0 && all.length >= 8) break;
+    } catch (e) {}
+  }
+
+  all = rank(all, q);
+  if (all.length > 80) all = all.slice(0, 80);
+  return all;
 }
 
 export async function home() {
@@ -672,7 +721,6 @@ export async function episodes(ref) {
     .split("/")
     .filter(Boolean)
     .pop();
-  // si viene "slug/12" (cap concreto), la serie es el slug
   var parts = String(ref).replace(/^\/+|\/+$/g, "").split("/");
   if (parts.length >= 2 && /^\d+$/.test(parts[parts.length - 1])) {
     slug = parts[parts.length - 2];
@@ -700,57 +748,120 @@ export async function episodes(ref) {
   if (og) poster = abs(og[1]);
   if (!poster) poster = posterFor(slug);
 
-  // Total de episodios
-  var total = 0;
+  // id numérico del anime (data-anime / ajax/episodes/ID)
+  var animeId = "";
+  var idM =
+    html.match(/data-anime=["'](\d+)["']/i) ||
+    html.match(/ajax\/episodes\/(\d+)\//i) ||
+    html.match(/ajax\/search_episode\/(\d+)\//i);
+  if (idM) animeId = idM[1];
 
-  // 1) Episodios: N (series terminadas)
-  var epCount = html.match(/Episodios:<\/span>\s*(\d+)/i);
-  if (epCount) {
-    var n = parseInt(epCount[1], 10);
-    if (n > 0) total = n;
+  var csrf = "";
+  var csrfM = html.match(/name=["']csrf-token["']\s+content=["']([^"']+)["']/i);
+  if (!csrfM) csrfM = html.match(/content=["']([^"']+)["']\s+name=["']csrf-token["']/i);
+  if (csrfM) csrf = csrfM[1];
+
+  var episodes = [];
+  var THUMB_BASE =
+    "https://cdn.jkdesa.com/assets/images/animes/video/image_thumb/";
+
+  // 1) Lista real vía AJAX (solo capítulos publicados + miniaturas)
+  if (animeId && csrf) {
+    try {
+      for (var page = 1; page <= 30; page++) {
+        var r = await kino.fetch(BASE + "/ajax/episodes/" + animeId + "/" + page, {
+          method: "POST",
+          headers: hdr({
+            Referer: BASE + "/" + slug + "/",
+            "X-Requested-With": "XMLHttpRequest",
+            "X-CSRF-TOKEN": csrf,
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          }),
+          body: "_token=" + encodeURIComponent(csrf),
+          timeoutMs: 15000,
+        });
+        if (!r.ok) break;
+        var json = await r.json();
+        var list = (json && json.data) || [];
+        if (!list.length) break;
+        for (var e = 0; e < list.length; e++) {
+          var item = list[e];
+          var num = parseInt(item.number, 10);
+          if (!(num > 0)) continue;
+          var still = undefined;
+          if (item.image && String(item.image).length > 5) {
+            still = THUMB_BASE + String(item.image).replace(/^.*\//, "");
+          }
+          episodes.push({
+            season: 1,
+            number: num,
+            ref: slug + "/" + num,
+            title: item.title ? strip(item.title) : "Episodio " + num,
+            still: still,
+          });
+        }
+        var lastPage = (json && json.last_page) || page;
+        if (page >= lastPage) break;
+        if (!json.next_page_url) break;
+      }
+    } catch (err) {
+      episodes = [];
+    }
   }
 
-  // 2) Ultimo episodio (en emision): id="uep" → /slug/1180/
-  if (total <= 0) {
+  // 2) Fallback: solo hasta el último episodio REAL (#uep), no el total planificado
+  if (episodes.length === 0) {
+    var available = 0;
     var uep =
       html.match(/id=["']uep["'][^>]*href=["'][^"']*\/([a-z0-9-]+)\/(\d+)\/?["']/i) ||
       html.match(/href=["'][^"']*\/([a-z0-9-]+)\/(\d+)\/?["'][^>]*id=["']uep["']/i);
-    if (uep) {
-      total = parseInt(uep[2], 10) || 0;
+    if (uep) available = parseInt(uep[2], 10) || 0;
+    if (available <= 0) {
+      var uep2 = html.match(
+        /[UÚ]ltimo episodio[\s\S]{0,250}?\/([a-z0-9-]+)\/(\d+)\/?/i
+      );
+      if (uep2) available = parseInt(uep2[2], 10) || 0;
+    }
+    // Si está finalizado, "Episodios: N" sí es confiable
+    var finished = /Estado:<\/span>\s*[^<]*Finalizado/i.test(html);
+    var planned = 0;
+    var epCount = html.match(/Episodios:<\/span>\s*(\d+)/i);
+    if (epCount) planned = parseInt(epCount[1], 10) || 0;
+
+    var total = available;
+    if (total <= 0 && finished && planned > 0) total = planned;
+    if (total <= 0) {
+      var re = new RegExp(
+        "/" + slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/(\d+)/?",
+        "gi"
+      );
+      var m;
+      var max = 0;
+      while ((m = re.exec(html)) !== null) {
+        var num = parseInt(m[1], 10);
+        if (num > max && num < 100000) max = num;
+      }
+      total = max;
+    }
+    if (total <= 0) total = 1;
+    if (total > 5000) total = 5000;
+    // En emisión: nunca inventar más que el último publicado
+    if (available > 0 && total > available) total = available;
+
+    for (var n = 1; n <= total; n++) {
+      episodes.push({
+        season: 1,
+        number: n,
+        ref: slug + "/" + n,
+        title: "Episodio " + n,
+        still: poster || undefined,
+      });
     }
   }
-  if (total <= 0) {
-    var uep2 = html.match(/[UÚ]ltimo episodio[\s\S]{0,250}?\/([a-z0-9-]+)\/(\d+)\/?/i);
-    if (uep2) total = parseInt(uep2[2], 10) || 0;
-  }
 
-  // 3) Max numero en enlaces del propio anime
-  if (total <= 0) {
-    var re = new RegExp(
-      "/" + slug.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&") + "/(\\d+)/?",
-      "gi"
-    );
-    var m;
-    var max = 0;
-    while ((m = re.exec(html)) !== null) {
-      var num = parseInt(m[1], 10);
-      if (num > max && num < 100000) max = num;
-    }
-    if (max > 0) total = max;
-  }
-
-  if (total <= 0) total = 1;
-  if (total > 5000) total = 5000;
-
-  var episodes = [];
-  for (var n = 1; n <= total; n++) {
-    episodes.push({
-      season: 1,
-      number: n,
-      ref: slug + "/" + n,
-      title: "Episodio " + n,
-    });
-  }
+  episodes.sort(function (a, b) {
+    return a.number - b.number;
+  });
 
   return {
     series: {
@@ -763,7 +874,7 @@ export async function episodes(ref) {
   };
 }
 
-export async function resolve(ref) {
+export async function resolveexport async function resolve(ref) {
   await Promise.resolve();
   var slugEp = String(ref);
   var forceIndex = -1;
