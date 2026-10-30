@@ -1,7 +1,7 @@
 {
   "id": "jkanime",
   "name": "JKAnime",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "apiVersion": 6,
   "entry": "plugin.js",
   "description": "Hecho por Hotaru Yume - Anime sub español",

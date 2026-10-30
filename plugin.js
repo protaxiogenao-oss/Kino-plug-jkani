@@ -1,6 +1,6 @@
 /// <reference path="./kino.d.ts" />
 /**
- * JKAnime plugin for Kino — 1.5.1
+ * JKAnime plugin for Kino — 1.5.2
  * jkanime.bz — Home: episodios recientes, emision, recientes, latino 16:9
  */
 
@@ -748,7 +748,17 @@ export async function episodes(ref) {
   if (og) poster = abs(og[1]);
   if (!poster) poster = posterFor(slug);
 
-  // id numérico del anime (data-anime / ajax/episodes/ID)
+  // Estado real en JKAnime: class="enemision finished">Concluido  |  En emisión
+  var isFinished =
+    /enemision\s+finished/i.test(html) ||
+    />(?:Concluido|Finalizado)</i.test(html) ||
+    /Estado:[\s\S]{0,120}?(?:Concluido|Finalizado)/i.test(html);
+  var isAiring =
+    !isFinished &&
+    (/enemision(?!\s+finished)/i.test(html) ||
+      /En\s+emisi[oó]n/i.test(html) ||
+      /id=["']uep["']/i.test(html));
+
   var animeId = "";
   var idM =
     html.match(/data-anime=["'](\d+)["']/i) ||
@@ -765,23 +775,43 @@ export async function episodes(ref) {
   var THUMB_BASE =
     "https://cdn.jkdesa.com/assets/images/animes/video/image_thumb/";
 
-  // 1) Lista real vía AJAX (solo capítulos publicados + miniaturas)
-  if (animeId && csrf) {
+  // 1) Lista oficial AJAX (paginada): solo caps que existen en la web
+  if (animeId) {
     try {
-      for (var page = 1; page <= 30; page++) {
-        var r = await kino.fetch(BASE + "/ajax/episodes/" + animeId + "/" + page, {
+      for (var page = 1; page <= 40; page++) {
+        var opts = {
           method: "POST",
           headers: hdr({
             Referer: BASE + "/" + slug + "/",
             "X-Requested-With": "XMLHttpRequest",
-            "X-CSRF-TOKEN": csrf,
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            Accept: "application/json, text/javascript, */*; q=0.01",
           }),
-          body: "_token=" + encodeURIComponent(csrf),
           timeoutMs: 15000,
-        });
+        };
+        if (csrf) {
+          opts.headers["X-CSRF-TOKEN"] = csrf;
+          opts.body = "_token=" + encodeURIComponent(csrf);
+          opts.form = { _token: csrf };
+        } else {
+          opts.body = "";
+        }
+        var r = await kino.fetch(
+          BASE + "/ajax/episodes/" + animeId + "/" + page,
+          opts
+        );
         if (!r.ok) break;
-        var json = await r.json();
+        var json = null;
+        try {
+          json = await r.json();
+        } catch (je) {
+          var raw = await r.text();
+          try {
+            json = JSON.parse(raw);
+          } catch (je2) {
+            break;
+          }
+        }
         var list = (json && json.data) || [];
         if (!list.length) break;
         for (var e = 0; e < list.length; e++) {
@@ -800,7 +830,7 @@ export async function episodes(ref) {
             still: still,
           });
         }
-        var lastPage = (json && json.last_page) || page;
+        var lastPage = parseInt((json && json.last_page) || page, 10);
         if (page >= lastPage) break;
         if (!json.next_page_url) break;
       }
@@ -809,12 +839,16 @@ export async function episodes(ref) {
     }
   }
 
-  // 2) Fallback: solo hasta el último episodio REAL (#uep), no el total planificado
+  // 2) Fallback sin AJAX
   if (episodes.length === 0) {
     var available = 0;
     var uep =
-      html.match(/id=["']uep["'][^>]*href=["'][^"']*\/([a-z0-9-]+)\/(\d+)\/?["']/i) ||
-      html.match(/href=["'][^"']*\/([a-z0-9-]+)\/(\d+)\/?["'][^>]*id=["']uep["']/i);
+      html.match(
+        /id=["']uep["'][^>]*href=["'][^"']*\/([a-z0-9-]+)\/(\d+)\/?["']/i
+      ) ||
+      html.match(
+        /href=["'][^"']*\/([a-z0-9-]+)\/(\d+)\/?["'][^>]*id=["']uep["']/i
+      );
     if (uep) available = parseInt(uep[2], 10) || 0;
     if (available <= 0) {
       var uep2 = html.match(
@@ -822,31 +856,37 @@ export async function episodes(ref) {
       );
       if (uep2) available = parseInt(uep2[2], 10) || 0;
     }
-    // Si está finalizado, "Episodios: N" sí es confiable
-    var finished = /Estado:<\/span>\s*[^<]*Finalizado/i.test(html);
+
     var planned = 0;
     var epCount = html.match(/Episodios:<\/span>\s*(\d+)/i);
     if (epCount) planned = parseInt(epCount[1], 10) || 0;
 
-    var total = available;
-    if (total <= 0 && finished && planned > 0) total = planned;
-    if (total <= 0) {
-      var re = new RegExp(
-        "/" + slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/(\d+)/?",
-        "gi"
-      );
-      var m;
-      var max = 0;
-      while ((m = re.exec(html)) !== null) {
-        var num = parseInt(m[1], 10);
-        if (num > max && num < 100000) max = num;
-      }
-      total = max;
+    var maxLink = 0;
+    var re = new RegExp(
+      "/" + slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/(\\d+)/?",
+      "gi"
+    );
+    var mm;
+    while ((mm = re.exec(html)) !== null) {
+      var nn = parseInt(mm[1], 10);
+      if (nn > maxLink && nn < 100000) maxLink = nn;
     }
+
+    var total = 0;
+    if (isFinished) {
+      // Concluidos: todos los planificados (están en la web)
+      total = planned || available || maxLink;
+    } else if (isAiring || available > 0) {
+      // En emisión: solo hasta el último publicado (uep), nunca el total de temporada
+      total = available || maxLink;
+      if (planned > 0 && total > planned) total = planned;
+    } else {
+      // Estado desconocido: preferir lo publicado si hay pista, si no lo planificado
+      total = available || maxLink || planned;
+    }
+
     if (total <= 0) total = 1;
     if (total > 5000) total = 5000;
-    // En emisión: nunca inventar más que el último publicado
-    if (available > 0 && total > available) total = available;
 
     for (var n = 1; n <= total; n++) {
       episodes.push({
@@ -859,7 +899,15 @@ export async function episodes(ref) {
     }
   }
 
-  episodes.sort(function (a, b) {
+  // dedupe por número
+  var byNum = {};
+  var uniq = [];
+  for (var u = 0; u < episodes.length; u++) {
+    if (byNum[episodes[u].number]) continue;
+    byNum[episodes[u].number] = true;
+    uniq.push(episodes[u]);
+  }
+  uniq.sort(function (a, b) {
     return a.number - b.number;
   });
 
@@ -870,7 +918,7 @@ export async function episodes(ref) {
       overview: overview || undefined,
       genres: ["anime"],
     },
-    episodes: episodes,
+    episodes: uniq,
   };
 }
 
