@@ -1,6 +1,6 @@
 /// <reference path="./kino.d.ts" />
 /**
- * JKAnime plugin for Kino — 1.5.0
+ * JKAnime plugin for Kino — 1.5.1
  * jkanime.bz — Home: episodios recientes, emision, recientes, latino 16:9
  */
 
@@ -874,7 +874,7 @@ export async function episodes(ref) {
   };
 }
 
-export async function resolveexport async function resolve(ref) {
+export async function resolve(ref) {
   await Promise.resolve();
   var slugEp = String(ref);
   var forceIndex = -1;
