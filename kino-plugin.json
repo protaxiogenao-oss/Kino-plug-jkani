@@ -4,9 +4,9 @@
   "version": "1.5.2",
   "apiVersion": 6,
   "entry": "plugin.js",
-  "description": "Hecho por Hotaru Yume - Anime sub español",
+  "description": "Series y peliculas anime sub español",
   "author": "Hotaru Yume",
-  "creator": "@hotaruyume",
+  "creator": "hotaruyume",
   "homepage": "https://github.com/yumehotaru41-rgb/kino-plugin-jkanime",
   "hosts": [
     "jkanime.bz",
