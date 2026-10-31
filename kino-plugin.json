@@ -6,6 +6,7 @@
   "entry": "plugin.js",
   "description": "Hecho por Hotaru Yume - Anime sub español",
   "author": "Hotaru Yume",
+  "creator": "@hotaruyume",
   "homepage": "https://github.com/yumehotaru41-rgb/kino-plugin-jkanime",
   "hosts": [
     "jkanime.bz",
