@@ -1,6 +1,6 @@
 /// <reference path="./kino.d.ts" />
 /**
- * JKAnime plugin for Kino — 1.5.2
+ * JKAnime plugin for Kino — 1.5.3
  * jkanime.bz — Home: episodios recientes, emision, recientes, latino 16:9
  */
 
@@ -23,16 +23,41 @@ function hdr(extra) {
 
 async function get(path, referer) {
   var url = path.indexOf("http") === 0 ? path : BASE + path;
-  var r = await kino.fetch(url, {
-    headers: hdr(referer ? { Referer: referer } : null),
-    timeoutMs: 18000,
-  });
-  if (!r.ok) {
-    throw kino.error("unavailable", "http " + r.status, {
-      userMessage: "No se pudo cargar la pagina (" + r.status + ").",
+  var lastStatus = 0;
+  var lastErr = null;
+  // Reintentos ante 5xx / errores de red (el backend de jkanime falla a ratos)
+  for (var attempt = 0; attempt < 3; attempt++) {
+    try {
+      if (attempt > 0) {
+        await new Promise(function (res) {
+          setTimeout(res, 400 * attempt);
+        });
+      }
+      var r = await kino.fetch(url, {
+        headers: hdr(referer ? { Referer: referer } : null),
+        timeoutMs: 18000,
+      });
+      lastStatus = r.status;
+      if (r.ok) {
+        return await r.text();
+      }
+      // Solo reintentar errores temporales del servidor
+      if (r.status < 500 || r.status >= 600) {
+        break;
+      }
+    } catch (e) {
+      lastErr = e;
+      // reintentar errores de red
+    }
+  }
+  if (lastStatus) {
+    throw kino.error("unavailable", "http " + lastStatus, {
+      userMessage: "No se pudo cargar la pagina (" + lastStatus + "). Reintenta en unos segundos.",
     });
   }
-  return await r.text();
+  throw lastErr || kino.error("unavailable", "network", {
+    userMessage: "Error de red al cargar la pagina. Reintenta.",
+  });
 }
 
 function strip(s) {
@@ -430,6 +455,19 @@ function findMediaInBody(body) {
       ) {
         return u;
       }
+    }
+  }
+  // Fallback: URL ofuscada con atob('...')
+  var atobs = body.match(/atob\s*\(\s*['"]([A-Za-z0-9+/=\s]+)['"]\s*\)/g) || [];
+  for (var j = 0; j < atobs.length; j++) {
+    var m64 = atobs[j].match(/atob\s*\(\s*['"]([A-Za-z0-9+/=\s]+)['"]\s*\)/);
+    if (!m64) continue;
+    var decoded = b64(m64[1]);
+    if (!decoded) continue;
+    var mu = decoded.match(/(https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4)[^\s"'<>]*)/i);
+    if (mu) {
+      var u2 = cleanMediaUrl(mu[1]);
+      if (u2.indexOf("http") === 0) return u2;
     }
   }
   return null;

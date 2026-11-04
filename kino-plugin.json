@@ -1,7 +1,7 @@
 {
   "id": "jkanime",
   "name": "JKAnime",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "apiVersion": 6,
   "entry": "plugin.js",
   "description": "Series y peliculas anime sub español",
@@ -52,7 +52,17 @@
     "mxdrop.to",
     "*.mxdrop.to",
     "dsvplay.com",
-    "*.dsvplay.com"
+    "*.dsvplay.com",
+    "ducvomes.com",
+    "*.ducvomes.com",
+    "cdn1.ducvomes.com",
+    "cdn2.ducvomes.com",
+    "cdn3.ducvomes.com",
+    "cdn4.ducvomes.com",
+    "cdn5.ducvomes.com",
+    "cdn6.ducvomes.com",
+    "jkdesa.com",
+    "stats.jkdesa.com"
   ],
   "streamHosts": "any",
   "capabilities": [
