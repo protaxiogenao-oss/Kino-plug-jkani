@@ -1,6 +1,6 @@
 /// <reference path="./kino.d.ts" />
 /**
- * JKAnime plugin for Kino — 1.5.3
+ * JKAnime plugin for Kino — 1.5.4
  * jkanime.bz — Home: episodios recientes, emision, recientes, latino 16:9
  */
 
@@ -21,35 +21,40 @@ function hdr(extra) {
   return h;
 }
 
-async function get(path, referer) {
+/**
+ * Fetch HTML. opts: { retries, timeoutMs, soft }
+ * soft=true: no lanza error, devuelve "" (para resolve de embeds).
+ */
+async function get(path, referer, opts) {
+  opts = opts || {};
+  var retries = opts.retries != null ? opts.retries : 1;
+  var timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : 10000;
+  var soft = !!opts.soft;
   var url = path.indexOf("http") === 0 ? path : BASE + path;
   var lastStatus = 0;
   var lastErr = null;
-  // Reintentos ante 5xx / errores de red (el backend de jkanime falla a ratos)
-  for (var attempt = 0; attempt < 3; attempt++) {
+  for (var attempt = 0; attempt <= retries; attempt++) {
     try {
       if (attempt > 0) {
         await new Promise(function (res) {
-          setTimeout(res, 400 * attempt);
+          setTimeout(res, 250 * attempt);
         });
       }
       var r = await kino.fetch(url, {
         headers: hdr(referer ? { Referer: referer } : null),
-        timeoutMs: 18000,
+        timeoutMs: timeoutMs,
       });
       lastStatus = r.status;
       if (r.ok) {
         return await r.text();
       }
-      // Solo reintentar errores temporales del servidor
-      if (r.status < 500 || r.status >= 600) {
-        break;
-      }
+      // Solo reintentar 5xx
+      if (r.status < 500 || r.status >= 600) break;
     } catch (e) {
       lastErr = e;
-      // reintentar errores de red
     }
   }
+  if (soft) return "";
   if (lastStatus) {
     throw kino.error("unavailable", "http " + lastStatus, {
       userMessage: "No se pudo cargar la pagina (" + lastStatus + "). Reintenta en unos segundos.",
@@ -486,22 +491,26 @@ async function resolveServer(server, pageReferer) {
     };
   }
 
-  try {
-    var body = await get(url, pageReferer);
-    var media = findMediaInBody(body);
-    if (media) {
-      return {
-        url: media,
-        mime: /\.m3u8/i.test(media) ? "application/x-mpegURL" : "video/mp4",
-        label: server.label,
-        headers: {
-          Referer: url.indexOf("jkanime") >= 0 ? BASE + "/" : url,
-          "User-Agent": UA,
-        },
-      };
-    }
-  } catch (e) {}
-
+  // Embeds: timeout corto y sin reintentos (Kino corta resolve a ~20s)
+  var isJk = /jkanime\.|jkplayer\//i.test(url);
+  var body = await get(url, pageReferer, {
+    retries: isJk ? 1 : 0,
+    timeoutMs: isJk ? 7000 : 5000,
+    soft: true,
+  });
+  if (!body) return null;
+  var media = findMediaInBody(body);
+  if (media) {
+    return {
+      url: media,
+      mime: /\.m3u8/i.test(media) ? "application/x-mpegURL" : "video/mp4",
+      label: server.label,
+      headers: {
+        Referer: isJk ? BASE + "/" : url,
+        "User-Agent": UA,
+      },
+    };
+  }
   return null;
 }
 
@@ -975,7 +984,8 @@ export async function resolve(ref) {
 
   var path = "/" + slugEp.replace(/^\/+|\/+$/g, "") + "/";
   var pageUrl = BASE + path;
-  var html = await get(path);
+  // Página del capítulo: timeout moderado (Kino corta resolve a ~20s)
+  var html = await get(path, null, { retries: 0, timeoutMs: 8000 });
   var servers = parseServers(html);
 
   // Preferencia del usuario
@@ -1012,27 +1022,71 @@ export async function resolve(ref) {
 
   var primary = null;
   var alternatives = [];
-  // Intentar Desu, Nozomi, Mp4Upload primero (hasta 5)
-  for (var i = 0; i < order.length && i < 5; i++) {
-    var s = order[i];
-    var stream = await resolveServer(s, pageUrl);
+
+  function altRefOf(s, i) {
     var idx = -1;
     for (var t = 0; t < servers.length; t++) if (servers[t].url === s.url) idx = t;
-    var altRef = "server-" + slugEp.replace(/\//g, ".") + "-" + (idx >= 0 ? idx : i);
-    if (stream && stream.url && /\.(m3u8|mp4)(\?|$)/i.test(stream.url)) {
-      if (!primary) primary = stream;
-      else alternatives.push({ label: s.label.slice(0, 48), ref: altRef });
-    } else {
-      alternatives.push({ label: s.label.slice(0, 48), ref: altRef });
+    return "server-" + slugEp.replace(/\//g, ".") + "-" + (idx >= 0 ? idx : i);
+  }
+
+  // 1) Intentar en paralelo los 2 primeros (Desu/Nozomi suelen estar al inicio)
+  var firstBatch = order.slice(0, Math.min(2, order.length));
+  if (firstBatch.length) {
+    var results = await Promise.all(
+      firstBatch.map(function (s) {
+        return resolveServer(s, pageUrl).then(
+          function (stream) {
+            return { s: s, stream: stream };
+          },
+          function () {
+            return { s: s, stream: null };
+          }
+        );
+      })
+    );
+    for (var r = 0; r < results.length; r++) {
+      var item = results[r];
+      var aRef = altRefOf(item.s, r);
+      if (
+        item.stream &&
+        item.stream.url &&
+        /\.(m3u8|mp4)(\?|$)/i.test(item.stream.url)
+      ) {
+        if (!primary) primary = item.stream;
+        else alternatives.push({ label: item.s.label.slice(0, 48), ref: aRef });
+      } else {
+        alternatives.push({ label: item.s.label.slice(0, 48), ref: aRef });
+      }
     }
   }
 
-  // Resto como alternativas sin resolver
-  for (var j = 5; j < servers.length && alternatives.length < 8; j++) {
-    alternatives.push({
-      label: servers[j].label.slice(0, 48),
-      ref: "server-" + slugEp.replace(/\//g, ".") + "-" + j,
-    });
+  // 2) Si aún no hay stream, probar 1-2 más en serie (máx. 4 intentos totales)
+  if (!primary) {
+    for (var i = firstBatch.length; i < order.length && i < 4; i++) {
+      var s = order[i];
+      var stream = await resolveServer(s, pageUrl);
+      var aRef2 = altRefOf(s, i);
+      if (stream && stream.url && /\.(m3u8|mp4)(\?|$)/i.test(stream.url)) {
+        primary = stream;
+        // el resto como alternativas sin resolver
+        for (var k = i + 1; k < order.length && alternatives.length < 8; k++) {
+          alternatives.push({
+            label: order[k].label.slice(0, 48),
+            ref: altRefOf(order[k], k),
+          });
+        }
+        break;
+      }
+      alternatives.push({ label: s.label.slice(0, 48), ref: aRef2 });
+    }
+  } else {
+    // Resto como alternativas sin gastar tiempo resolviendo
+    for (var j = firstBatch.length; j < order.length && alternatives.length < 8; j++) {
+      alternatives.push({
+        label: order[j].label.slice(0, 48),
+        ref: altRefOf(order[j], j),
+      });
+    }
   }
 
   if (!primary) {

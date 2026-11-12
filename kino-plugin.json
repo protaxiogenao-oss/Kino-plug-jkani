@@ -1,7 +1,7 @@
 {
   "id": "jkanime",
   "name": "JKAnime",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "apiVersion": 6,
   "entry": "plugin.js",
   "description": "Series y peliculas anime sub español",
