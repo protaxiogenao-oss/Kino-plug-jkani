@@ -1,6 +1,6 @@
 /// <reference path="./kino.d.ts" />
 /**
- * JKAnime plugin for Kino — 1.5.4
+ * JKAnime plugin for Kino — 1.5.5
  * jkanime.bz — Home: episodios recientes, emision, recientes, latino 16:9
  */
 
@@ -362,6 +362,17 @@ function parseServers(html) {
     servers.push({ name: "nozomi", url: umvs[j].replace(/&amp;/g, "&"), label: "Nozomi", priority: 2 });
   }
 
+  // Fenix (jkplayer/jk) — aparece sobre todo en episodios antiguos
+  var jks = html.match(/https?:\/\/[^"'\s]*jkplayer\/jk\?[^"'\s]+/gi) || [];
+  for (var fi = 0; fi < jks.length; fi++) {
+    servers.push({
+      name: "fenix",
+      url: jks[fi].replace(/&amp;/g, "&"),
+      label: "Fenix",
+      priority: 2.5,
+    });
+  }
+
   // 2) var servers JSON
   var m = html.match(/var\s+servers\s*=\s*(\[[\s\S]*?\]);/);
   if (m) {
@@ -373,15 +384,18 @@ function parseServers(html) {
         if (url && url.indexOf("http") !== 0) url = b64(url).replace(/\n/g, "").trim();
         if (!url || url.indexOf("http") !== 0) continue;
         var name = String(s.server || "server").toLowerCase();
-        // saltar descargas
+        // saltar solo descargas (no reproducibles embebidos)
         if (/mega|mediafire/.test(name)) continue;
         var priority = 50;
+        // Prioridad por facilidad de extracción + velocidad típica
         if (/mp4upload/.test(name)) priority = 3;
-        else if (/streamwish|sfastwish/.test(name)) priority = 10;
+        else if (/vidhide/.test(name)) priority = 4;
+        else if (/mixdrop|mxdrop/.test(name)) priority = 5;
+        else if (/streamtape/.test(name)) priority = 6;
+        else if (/streamwish|sfastwish|hgcloud/.test(name)) priority = 12;
         else if (/voe/.test(name)) priority = 15;
-        else if (/filemoon|bysekoze/.test(name)) priority = 20;
-        else if (/mixdrop|mxdrop/.test(name)) priority = 25;
-        else if (/streamtape/.test(name)) priority = 30;
+        else if (/filemoon|bysekoze/.test(name)) priority = 18;
+        else if (/dood/.test(name)) priority = 20;
         servers.push({
           name: name,
           url: url,
@@ -419,6 +433,7 @@ function labelOf(name) {
   if (/dood/.test(name)) return "Doodstream";
   if (/desu/.test(name)) return "Desu";
   if (/nozomi/.test(name)) return "Nozomi";
+  if (/fenix/.test(name)) return "Fenix";
   return name ? name.charAt(0).toUpperCase() + name.slice(1) : "Servidor";
 }
 
@@ -436,33 +451,74 @@ function cleanMediaUrl(u) {
   return u;
 }
 
-/** Busca m3u8 o mp4 en el cuerpo de un embed */
+/** ¿Parece URL de video real (no JS/CSS/imagen)? */
+function isVideoUrl(u) {
+  if (!u || u.indexOf("http") !== 0) return false;
+  if (/\.(js|css|woff2?|ttf|svg|png|jpe?g|gif|webp|ico)(\?|$)/i.test(u)) return false;
+  if (/google|facebook|adservice|doubleclick|gtag|yandex/i.test(u)) return false;
+  if (/\.m3u8([?#]|$)/i.test(u)) return true;
+  if (/\.mp4([?#]|$)/i.test(u)) return true;
+  if (/\/get_video\?/i.test(u)) return true;
+  if (/\/hls[23]?\//i.test(u) && /master\.(m3u8|txt)/i.test(u)) return true;
+  return false;
+}
+
+/** Unpack Dean Edwards / packer eval(function(p,a,c,k,e,d){...}) */
+function unpackPacker(text) {
+  if (!text) return "";
+  var m = text.match(/}\('(.*)',(\d+),(\d+),'(.*)'\.split\('\|'\)/s);
+  if (!m) {
+    m = text.match(/}\("(.*)",(\d+),(\d+),"(.*)"\.split\("\|"\)/s);
+  }
+  if (!m) return "";
+  var payload = m[1];
+  var radix = parseInt(m[2], 10);
+  var keywords = m[4].split("|");
+  var alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  function toIdx(token) {
+    if (radix <= 36) {
+      var n = parseInt(token, radix);
+      return isNaN(n) ? -1 : n;
+    }
+    var idx = 0;
+    for (var i = 0; i < token.length; i++) {
+      var p = alphabet.indexOf(token.charAt(i));
+      if (p < 0) return -1;
+      idx = idx * radix + p;
+    }
+    return idx;
+  }
+  return payload.replace(/\b\w+\b/g, function (tok) {
+    var i = toIdx(tok);
+    if (i >= 0 && i < keywords.length && keywords[i]) return keywords[i];
+    return tok;
+  });
+}
+
+/** Busca m3u8 o mp4 en texto plano */
 function findMediaInBody(body) {
+  if (!body) return null;
   var patterns = [
     /(https?:\/\/[^"'\s\\<>]+\.m3u8[^"'\s\\<>]*)/i,
     /(https?:\/\/[^"'\s\\<>]+:[0-9]+\/[^"'\s\\<>]+\.mp4[^"'\s\\<>]*)/i,
     /(https?:\/\/[^"'\s\\<>]+\.mp4[^"'\s\\<>]*)/i,
     /src:\s*["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i,
-    /file:\s*["'](https?:\/\/[^"']+)["']/i,
+    /file:\s*["'](https?:\/\/[^"']+\.(?:mp4|m3u8)[^"']*)["']/i,
     /url:\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/i,
     /url:\s*["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i,
     /video:\s*\{\s*url:\s*["'](https?:\/\/[^"']+)["']/i,
+    /["']src["']\s*:\s*["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i,
+    /player\.src\(\s*\{\s*type:\s*["'][^"']+["']\s*,\s*src:\s*["'](https?:\/\/[^"']+)["']/i,
     /<source[^>]+src=["'](https?:\/\/[^"']+)["']/i,
   ];
   for (var i = 0; i < patterns.length; i++) {
     var mm = body.match(patterns[i]);
     if (mm) {
       var u = cleanMediaUrl(mm[1]);
-      if (
-        u.indexOf("http") === 0 &&
-        !/\.(js|css)(\?|$)/i.test(u) &&
-        !/google|facebook|ads/i.test(u)
-      ) {
-        return u;
-      }
+      if (isVideoUrl(u)) return u;
     }
   }
-  // Fallback: URL ofuscada con atob('...')
+  // atob('base64...')
   var atobs = body.match(/atob\s*\(\s*['"]([A-Za-z0-9+/=\s]+)['"]\s*\)/g) || [];
   for (var j = 0; j < atobs.length; j++) {
     var m64 = atobs[j].match(/atob\s*\(\s*['"]([A-Za-z0-9+/=\s]+)['"]\s*\)/);
@@ -472,17 +528,130 @@ function findMediaInBody(body) {
     var mu = decoded.match(/(https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4)[^\s"'<>]*)/i);
     if (mu) {
       var u2 = cleanMediaUrl(mu[1]);
-      if (u2.indexOf("http") === 0) return u2;
+      if (isVideoUrl(u2)) return u2;
     }
   }
   return null;
 }
 
+/** Vidhide / similar: packer → links.hls* */
+function extractFromPackedLinks(body) {
+  if (!body || body.indexOf("eval(function") < 0) return null;
+  var scripts = body.match(/<script[^>]*>([\s\S]*?)<\/script>/gi) || [];
+  var chunks = scripts.length ? scripts : [body];
+  for (var i = 0; i < chunks.length; i++) {
+    if (chunks[i].indexOf("eval(function") < 0) continue;
+    var un = unpackPacker(chunks[i]);
+    if (!un) continue;
+    // links={"hls2":"https://...m3u8"...}
+    var lm = un.match(/"hls[0-9]"\s*:\s*"(https?:\\?\/\\?\/[^"]+)"/i);
+    if (!lm) lm = un.match(/hls[0-9]\s*:\s*["'](https?:[^"']+)["']/i);
+    if (lm) {
+      var u = cleanMediaUrl(lm[1]);
+      if (isVideoUrl(u) || /\.txt([?#]|$)/i.test(u)) return u.replace(/master\.txt/i, "master.m3u8");
+    }
+    var direct = findMediaInBody(un);
+    if (direct) return direct;
+  }
+  return null;
+}
+
+/** Mixdrop: MDCore.wurl */
+function extractMixdrop(body) {
+  if (!body) return null;
+  var scripts = body.match(/<script[^>]*>([\s\S]*?)<\/script>/gi) || [];
+  for (var i = 0; i < scripts.length; i++) {
+    var s = scripts[i];
+    if (s.indexOf("MDCore") < 0 && s.indexOf("eval(function") < 0) continue;
+    var un = s.indexOf("eval(function") >= 0 ? unpackPacker(s) : s;
+    if (!un) un = s;
+    var m =
+      un.match(/MDCore\.wurl\s*=\s*["']([^"']+)["']/i) ||
+      un.match(/wurl\s*=\s*["']([^"']+\.mp4[^"']*)["']/i);
+    if (m) {
+      var u = m[1].replace(/&amp;/g, "&").trim();
+      if (u.indexOf("//") === 0) u = "https:" + u;
+      if (isVideoUrl(u)) return u;
+    }
+  }
+  return extractFromPackedLinks(body);
+}
+
+/** Streamtape: reconstruye get_video desde robotlink (ideoolink suele ser señuelo) */
+function extractStreamtape(body) {
+  if (!body) return null;
+  var candidates = [];
+  var re =
+    /getElementById\(['"](robotlink|botlink|ideoolink)['"]\)\.innerHTML\s*=\s*['"]([^'"]*)['"]\s*\+\s*(?:''\s*\+\s*)?\(?['"]([^'"]+)['"]\)?\.substring\((\d+)\)(?:\.substring\((\d+)\))?/gi;
+  var m;
+  while ((m = re.exec(body)) !== null) {
+    var which = (m[1] || "").toLowerCase();
+    var prefix = m[2] || "";
+    var payload = m[3] || "";
+    var a = parseInt(m[4], 10) || 0;
+    var rest = payload.substring(a);
+    if (m[5] != null) rest = rest.substring(parseInt(m[5], 10));
+    var path = (prefix + rest).replace(/&amp;/g, "&");
+    if (path.indexOf("//") === 0) path = "https:" + path;
+    else if (path.indexOf("http") !== 0) {
+      if (path.indexOf("/streamtape.com") === 0) path = "https://" + path.slice(1);
+      else if (path.charAt(0) === "/") path = "https://streamtape.com" + path;
+      else path = "https://streamtape.com/" + path;
+    }
+    path = path.replace(/^https:\/streamtape\.com/, "https://streamtape.com");
+    if (!/get_video\?/i.test(path)) continue;
+    if (path.indexOf("stream=") < 0) path += (path.indexOf("?") >= 0 ? "&" : "?") + "stream=1";
+    // score: robotlink best, must contain get_video?id= (not idb=)
+    var score = 0;
+    if (which === "robotlink") score += 10;
+    else if (which === "botlink") score += 5;
+    if (/get_video\?id=/i.test(path)) score += 10;
+    if (/get_video\?idb=/i.test(path)) score -= 20;
+    candidates.push({ path: path, score: score });
+  }
+  candidates.sort(function (a, b) {
+    return b.score - a.score;
+  });
+  if (candidates.length && candidates[0].score > 0) return candidates[0].path;
+
+  // fallback: primer get_video?id= visible
+  var g = body.match(/\/get_video\?id=([a-zA-Z0-9]+)&expires=(\d+)&ip=([^&"'<>\s]+)&token=([a-zA-Z0-9]+)/);
+  if (g) {
+    return (
+      "https://streamtape.com/get_video?id=" +
+      g[1] +
+      "&expires=" +
+      g[2] +
+      "&ip=" +
+      g[3] +
+      "&token=" +
+      g[4] +
+      "&stream=1"
+    );
+  }
+  return null;
+}
+
+/** Mp4Upload: player.src({ src: "..." }) */
+function extractMp4upload(body) {
+  if (!body) return null;
+  var m =
+    body.match(/player\.src\(\s*\{[\s\S]*?src:\s*["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i) ||
+    body.match(/src:\s*["'](https?:\/\/[^"']*mp4upload\.com[^"']+\.mp4[^"']*)["']/i) ||
+    body.match(/src:\s*["'](https?:\/\/a\d*\.mp4upload\.com[^"']+)["']/i);
+  if (m) {
+    var u = cleanMediaUrl(m[1]);
+    if (isVideoUrl(u)) return u;
+  }
+  return findMediaInBody(body);
+}
+
 async function resolveServer(server, pageReferer) {
   var url = server.url;
+  var name = String(server.name || "").toLowerCase();
 
   // Ya es media directa
-  if (/\.(m3u8|mp4)(\?|$)/i.test(url)) {
+  if (/\.(m3u8|mp4)(\?|$)/i.test(url) || /\/get_video\?/i.test(url)) {
     return {
       url: url,
       mime: /\.m3u8/i.test(url) ? "application/x-mpegURL" : "video/mp4",
@@ -491,27 +660,47 @@ async function resolveServer(server, pageReferer) {
     };
   }
 
-  // Embeds: timeout corto y sin reintentos (Kino corta resolve a ~20s)
   var isJk = /jkanime\.|jkplayer\//i.test(url);
   var body = await get(url, pageReferer, {
     retries: isJk ? 1 : 0,
-    timeoutMs: isJk ? 7000 : 5000,
+    timeoutMs: isJk ? 7000 : 6000,
     soft: true,
   });
   if (!body) return null;
-  var media = findMediaInBody(body);
-  if (media) {
-    return {
-      url: media,
-      mime: /\.m3u8/i.test(media) ? "application/x-mpegURL" : "video/mp4",
-      label: server.label,
-      headers: {
-        Referer: isJk ? BASE + "/" : url,
-        "User-Agent": UA,
-      },
-    };
+
+  var media = null;
+  if (/mp4upload/.test(name) || /mp4upload\.com/i.test(url)) {
+    media = extractMp4upload(body);
+  } else if (/mixdrop|mxdrop/.test(name) || /mixdrop\.|mxcontent\.|mdbek/i.test(url)) {
+    media = extractMixdrop(body);
+  } else if (/streamtape/.test(name) || /streamtape\.com/i.test(url)) {
+    media = extractStreamtape(body);
+  } else if (/vidhide/.test(name) || /vidhide/i.test(url)) {
+    media = extractFromPackedLinks(body) || findMediaInBody(body);
+  } else {
+    media = findMediaInBody(body);
+    if (!media) media = extractFromPackedLinks(body);
+    if (!media && /MDCore/.test(body)) media = extractMixdrop(body);
+    if (!media && /get_video|robotlink|streamtape/i.test(body)) media = extractStreamtape(body);
   }
-  return null;
+
+  if (!media) return null;
+
+  var refererHdr = isJk ? BASE + "/" : url;
+  if (/mp4upload/i.test(media)) refererHdr = "https://www.mp4upload.com/";
+  if (/streamtape|tapecontent/i.test(media)) refererHdr = "https://streamtape.com/";
+  if (/mixdrop|mxcontent/i.test(media)) refererHdr = url;
+  if (/vidhide|dramiyos|willowgrove/i.test(media)) refererHdr = url;
+
+  return {
+    url: media,
+    mime: /\.m3u8|master\.txt/i.test(media) ? "application/x-mpegURL" : "video/mp4",
+    label: server.label,
+    headers: {
+      Referer: refererHdr,
+      "User-Agent": UA,
+    },
+  };
 }
 
 // -------------------- exports --------------------
