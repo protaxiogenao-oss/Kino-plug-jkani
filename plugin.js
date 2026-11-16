@@ -1,6 +1,6 @@
 /// <reference path="./kino.d.ts" />
 /**
- * JKAnime plugin for Kino — 1.5.5
+ * JKAnime plugin for Kino — 1.5.6
  * jkanime.bz — Home: episodios recientes, emision, recientes, latino 16:9
  */
 
@@ -356,20 +356,21 @@ function parseServers(html) {
   var ums = html.match(/https?:\/\/[^"'\s]*jkplayer\/um\?[^"'\s]+/gi) || [];
   var umvs = html.match(/https?:\/\/[^"'\s]*jkplayer\/umv\?[^"'\s]+/gi) || [];
   for (var i = 0; i < ums.length; i++) {
-    servers.push({ name: "desu", url: ums[i].replace(/&amp;/g, "&"), label: "Desu", priority: 1 });
+    // Desu funciona pero el CDN suele ser lento
+    servers.push({ name: "desu", url: ums[i].replace(/&amp;/g, "&"), label: "Desu", priority: 8 });
   }
   for (var j = 0; j < umvs.length; j++) {
-    servers.push({ name: "nozomi", url: umvs[j].replace(/&amp;/g, "&"), label: "Nozomi", priority: 2 });
+    servers.push({ name: "nozomi", url: umvs[j].replace(/&amp;/g, "&"), label: "Nozomi", priority: 7 });
   }
 
-  // Fenix (jkplayer/jk) — aparece sobre todo en episodios antiguos
+  // Fenix (jkplayer/jk) — episodios antiguos
   var jks = html.match(/https?:\/\/[^"'\s]*jkplayer\/jk\?[^"'\s]+/gi) || [];
   for (var fi = 0; fi < jks.length; fi++) {
     servers.push({
       name: "fenix",
       url: jks[fi].replace(/&amp;/g, "&"),
       label: "Fenix",
-      priority: 2.5,
+      priority: 9,
     });
   }
 
@@ -387,15 +388,22 @@ function parseServers(html) {
         // saltar solo descargas (no reproducibles embebidos)
         if (/mega|mediafire/.test(name)) continue;
         var priority = 50;
-        // Prioridad por facilidad de extracción + velocidad típica
-        if (/mp4upload/.test(name)) priority = 3;
-        else if (/vidhide/.test(name)) priority = 4;
-        else if (/mixdrop|mxdrop/.test(name)) priority = 5;
-        else if (/streamtape/.test(name)) priority = 6;
+        // Prioridad: hosts con extractor fiable y CDN más ágil
+        if (/mp4upload/.test(name)) priority = 1;
+        else if (/vidhide/.test(name)) priority = 2;
+        else if (/mixdrop|mxdrop/.test(name)) priority = 3;
+        else if (/streamtape/.test(name)) priority = 4;
         else if (/streamwish|sfastwish|hgcloud/.test(name)) priority = 12;
         else if (/voe/.test(name)) priority = 15;
         else if (/filemoon|bysekoze/.test(name)) priority = 18;
-        else if (/dood/.test(name)) priority = 20;
+        else if (/dood/.test(name)) priority = 10;
+        // Dominios doodstream caídos → espejo
+        if (/dood|dsvplay/.test(name) || /dsvplay\.com|d-s\.io|dood\./i.test(url)) {
+          url = url
+            .replace(/https?:\/\/dsvplay\.com/i, "https://d-s.io")
+            .replace(/https?:\/\/doodstream\.com/i, "https://d-s.io")
+            .replace(/https?:\/\/dood\.watch/i, "https://d-s.io");
+        }
         servers.push({
           name: name,
           url: url,
@@ -646,6 +654,27 @@ function extractMp4upload(body) {
   return findMediaInBody(body);
 }
 
+/** Doodstream / d-s.io */
+function extractDoodstream(body, pageUrl) {
+  if (!body) return null;
+  // pass_md5 path
+  var m = body.match(/(\/pass_md5\/[^"'\s]+)/i);
+  if (m) {
+    var base = "https://d-s.io";
+    try {
+      if (pageUrl && pageUrl.indexOf("http") === 0) {
+        var u = pageUrl.match(/^(https?:\/\/[^\/]+)/);
+        if (u) base = u[1];
+      }
+    } catch (e) {}
+    // real media needs a second request with token — return pass url marker for resolveServer
+    return { pass: base + m[1], base: base };
+  }
+  var direct = body.match(/(https?:\/\/[^"'\s]+\/[^"'\s]*\.mp4[^"'\s]*)/i);
+  if (direct && isVideoUrl(direct[1])) return direct[1];
+  return null;
+}
+
 async function resolveServer(server, pageReferer) {
   var url = server.url;
   var name = String(server.name || "").toLowerCase();
@@ -661,9 +690,10 @@ async function resolveServer(server, pageReferer) {
   }
 
   var isJk = /jkanime\.|jkplayer\//i.test(url);
+  var isDood = /dood|dsvplay|d-s\.io/i.test(name + url);
   var body = await get(url, pageReferer, {
     retries: isJk ? 1 : 0,
-    timeoutMs: isJk ? 7000 : 6000,
+    timeoutMs: isJk ? 7000 : 8000,
     soft: true,
   });
   if (!body) return null;
@@ -677,6 +707,20 @@ async function resolveServer(server, pageReferer) {
     media = extractStreamtape(body);
   } else if (/vidhide/.test(name) || /vidhide/i.test(url)) {
     media = extractFromPackedLinks(body) || findMediaInBody(body);
+  } else if (isDood) {
+    var dood = extractDoodstream(body, url);
+    if (dood && typeof dood === "object" && dood.pass) {
+      // Doodstream: GET pass_md5 → texto token, luego + random
+      var tokenBody = await get(dood.pass, url, { retries: 0, timeoutMs: 6000, soft: true });
+      if (tokenBody && tokenBody.indexOf("http") === 0) {
+        media = tokenBody.trim().split("\n")[0].trim();
+      } else if (tokenBody && tokenBody.length > 10 && tokenBody.indexOf("<") < 0) {
+        var rnd = Math.random().toString(36).slice(2);
+        media = tokenBody.trim() + rnd + "?token=" + (dood.pass.split("/").pop() || "") + "&expiry=" + Date.now();
+      }
+    } else if (typeof dood === "string") {
+      media = dood;
+    }
   } else {
     media = findMediaInBody(body);
     if (!media) media = extractFromPackedLinks(body);
@@ -684,13 +728,14 @@ async function resolveServer(server, pageReferer) {
     if (!media && /get_video|robotlink|streamtape/i.test(body)) media = extractStreamtape(body);
   }
 
-  if (!media) return null;
+  if (!media || typeof media !== "string") return null;
 
   var refererHdr = isJk ? BASE + "/" : url;
   if (/mp4upload/i.test(media)) refererHdr = "https://www.mp4upload.com/";
   if (/streamtape|tapecontent/i.test(media)) refererHdr = "https://streamtape.com/";
   if (/mixdrop|mxcontent/i.test(media)) refererHdr = url;
   if (/vidhide|dramiyos|willowgrove/i.test(media)) refererHdr = url;
+  if (isDood) refererHdr = url;
 
   return {
     url: media,
@@ -1160,20 +1205,36 @@ export async function episodes(ref) {
 
 export async function resolve(ref) {
   await Promise.resolve();
-  var slugEp = String(ref);
+  var raw = String(ref || "");
   var forceIndex = -1;
-  if (slugEp.indexOf("server-") === 0) {
-    var rest = slugEp.slice(7);
+  var slugEp = raw;
+
+  // Formato nuevo: sv|INDEX|slug/ep  (no rompe con guiones del slug)
+  if (raw.indexOf("sv|") === 0) {
+    var segs = raw.split("|");
+    forceIndex = parseInt(segs[1], 10);
+    if (isNaN(forceIndex)) forceIndex = -1;
+    slugEp = segs.slice(2).join("|");
+  } else if (raw.indexOf("server-") === 0) {
+    // Legado: server-slug.ep-INDEX
+    var rest = raw.slice(7);
     var lastDash = rest.lastIndexOf("-");
     if (lastDash > 0) {
       forceIndex = parseInt(rest.slice(lastDash + 1), 10);
-      slugEp = rest.slice(0, lastDash);
+      if (isNaN(forceIndex)) forceIndex = -1;
+      var body = rest.slice(0, lastDash);
+      var lastDot = body.lastIndexOf(".");
+      if (lastDot > 0 && /^\d+$/.test(body.slice(lastDot + 1))) {
+        slugEp = body.slice(0, lastDot) + "/" + body.slice(lastDot + 1);
+      } else {
+        slugEp = body.replace(/\./g, "/");
+      }
     }
   }
 
-  var path = "/" + slugEp.replace(/^\/+|\/+$/g, "") + "/";
+  slugEp = slugEp.replace(/^\/+|\/+$/g, "");
+  var path = "/" + slugEp + "/";
   var pageUrl = BASE + path;
-  // Página del capítulo: timeout moderado (Kino corta resolve a ~20s)
   var html = await get(path, null, { retries: 0, timeoutMs: 8000 });
   var servers = parseServers(html);
 
@@ -1184,7 +1245,7 @@ export async function resolve(ref) {
       for (var i = 0; i < servers.length; i++) {
         if (
           servers[i].name.indexOf(prefer) >= 0 ||
-          servers[i].label.toLowerCase().indexOf(prefer) >= 0
+          servers[i].label.toLowerCase().indexOf(String(prefer).toLowerCase()) >= 0
         ) {
           var p = servers.splice(i, 1)[0];
           servers.unshift(p);
@@ -1200,82 +1261,89 @@ export async function resolve(ref) {
     });
   }
 
-  var order = servers;
-  if (forceIndex >= 0 && forceIndex < servers.length) {
-    order = [servers[forceIndex]].concat(
-      servers.filter(function (_, i) {
-        return i !== forceIndex;
-      })
-    );
+  function altRefOf(idx) {
+    return "sv|" + idx + "|" + slugEp;
   }
+
+  function indexOfServer(s) {
+    for (var t = 0; t < servers.length; t++) {
+      if (servers[t].url === s.url) return t;
+    }
+    return -1;
+  }
+
+  // Si el usuario eligió un servidor concreto, resolver solo ese (+1 respaldo)
+  if (forceIndex >= 0 && forceIndex < servers.length) {
+    var forced = servers[forceIndex];
+    var stream = await resolveServer(forced, pageUrl);
+    if (stream && stream.url) {
+      var alts = [];
+      for (var a = 0; a < servers.length && alts.length < 8; a++) {
+        if (a === forceIndex) continue;
+        alts.push({ label: servers[a].label.slice(0, 48), ref: altRefOf(a) });
+      }
+      if (alts.length) stream.alternatives = alts;
+      return stream;
+    }
+    // fallback: probar otros extractables
+  }
+
+  // Resolver en paralelo los hosts con extractor fiable (máx 5)
+  var extractable = /mp4upload|vidhide|mixdrop|mxdrop|streamtape|desu|nozomi|fenix|dood/;
+  var batch = [];
+  var batchIdx = [];
+  for (var bi = 0; bi < servers.length && batch.length < 5; bi++) {
+    if (extractable.test(servers[bi].name) || /jkplayer\//i.test(servers[bi].url)) {
+      batch.push(servers[bi]);
+      batchIdx.push(bi);
+    }
+  }
+  // si prefer reordenó, asegurar que el primero entre
+  if (batch.length === 0) {
+    batch = servers.slice(0, Math.min(3, servers.length));
+    batchIdx = batch.map(function (_, i) { return i; });
+  }
+
+  var results = await Promise.all(
+    batch.map(function (s) {
+      return resolveServer(s, pageUrl).then(
+        function (stream) { return stream; },
+        function () { return null; }
+      );
+    })
+  );
 
   var primary = null;
+  var primaryIdx = -1;
+  var seenAlt = {};
   var alternatives = [];
-
-  function altRefOf(s, i) {
-    var idx = -1;
-    for (var t = 0; t < servers.length; t++) if (servers[t].url === s.url) idx = t;
-    return "server-" + slugEp.replace(/\//g, ".") + "-" + (idx >= 0 ? idx : i);
+  function pushAlt(idx, label) {
+    if (idx === primaryIdx || seenAlt[idx]) return;
+    seenAlt[idx] = true;
+    if (alternatives.length < 8) {
+      alternatives.push({ label: String(label || "Servidor").slice(0, 48), ref: altRefOf(idx) });
+    }
   }
-
-  // 1) Intentar en paralelo los 2 primeros (Desu/Nozomi suelen estar al inicio)
-  var firstBatch = order.slice(0, Math.min(2, order.length));
-  if (firstBatch.length) {
-    var results = await Promise.all(
-      firstBatch.map(function (s) {
-        return resolveServer(s, pageUrl).then(
-          function (stream) {
-            return { s: s, stream: stream };
-          },
-          function () {
-            return { s: s, stream: null };
-          }
-        );
-      })
-    );
-    for (var r = 0; r < results.length; r++) {
-      var item = results[r];
-      var aRef = altRefOf(item.s, r);
-      if (
-        item.stream &&
-        item.stream.url &&
-        /\.(m3u8|mp4)(\?|$)/i.test(item.stream.url)
-      ) {
-        if (!primary) primary = item.stream;
-        else alternatives.push({ label: item.s.label.slice(0, 48), ref: aRef });
+  for (var ri = 0; ri < results.length; ri++) {
+    var st = results[ri];
+    var sIdx = batchIdx[ri];
+    if (
+      st &&
+      st.url &&
+      (/\.(m3u8|mp4)(\?|$)/i.test(st.url) || /\/get_video\?/i.test(st.url) || /token=/i.test(st.url))
+    ) {
+      if (!primary) {
+        primary = st;
+        primaryIdx = sIdx;
       } else {
-        alternatives.push({ label: item.s.label.slice(0, 48), ref: aRef });
+        pushAlt(sIdx, batch[ri].label);
       }
+    } else {
+      pushAlt(sIdx, batch[ri].label);
     }
   }
-
-  // 2) Si aún no hay stream, probar 1-2 más en serie (máx. 4 intentos totales)
-  if (!primary) {
-    for (var i = firstBatch.length; i < order.length && i < 4; i++) {
-      var s = order[i];
-      var stream = await resolveServer(s, pageUrl);
-      var aRef2 = altRefOf(s, i);
-      if (stream && stream.url && /\.(m3u8|mp4)(\?|$)/i.test(stream.url)) {
-        primary = stream;
-        // el resto como alternativas sin resolver
-        for (var k = i + 1; k < order.length && alternatives.length < 8; k++) {
-          alternatives.push({
-            label: order[k].label.slice(0, 48),
-            ref: altRefOf(order[k], k),
-          });
-        }
-        break;
-      }
-      alternatives.push({ label: s.label.slice(0, 48), ref: aRef2 });
-    }
-  } else {
-    // Resto como alternativas sin gastar tiempo resolviendo
-    for (var j = firstBatch.length; j < order.length && alternatives.length < 8; j++) {
-      alternatives.push({
-        label: order[j].label.slice(0, 48),
-        ref: altRefOf(order[j], j),
-      });
-    }
+  for (var j = 0; j < servers.length; j++) {
+    pushAlt(j, servers[j].label);
   }
 
   if (!primary) {

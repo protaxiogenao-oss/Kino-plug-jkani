@@ -1,7 +1,7 @@
 {
   "id": "jkanime",
   "name": "JKAnime",
-  "version": "1.5.5",
+  "version": "1.5.6",
   "apiVersion": 6,
   "entry": "plugin.js",
   "description": "Series y peliculas anime sub español",
@@ -84,7 +84,17 @@
     "*.dramiyos-cdn.com",
     "willowgrovelearning.store",
     "*.willowgrovelearning.store",
-    "pixibay.cc"
+    "pixibay.cc",
+    "dood.wf",
+    "*.dood.wf",
+    "dood.li",
+    "*.dood.li",
+    "dood.la",
+    "*.dood.la",
+    "dood.to",
+    "*.dood.to",
+    "mountaintrailcreative.store",
+    "*.mountaintrailcreative.store"
   ],
   "streamHosts": "any",
   "capabilities": [
@@ -113,7 +123,7 @@
       "key": "preferServer",
       "label": "Servidor preferido",
       "type": "select",
-      "default": "desu",
+      "default": "auto",
       "options": [
         {
           "value": "auto",
